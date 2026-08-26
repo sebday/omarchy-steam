@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Steam library/recent play status for evo.steam Omarchy bar widget.
+set -euo pipefail
+
+STEAM_DIR="${STEAM_DIR:-${HOME}/.local/share/Steam}"
+STEAM_BIN="${STEAM_BIN:-steam}"
+
+_bin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=steam-status-lib
+source "${_bin_dir}/steam-status-lib"
+
+cmd_popup() {
+  steam_popup_json "$STEAM_DIR" "$STEAM_BIN"
+}
+
+cmd_launch() {
+  local appid="${1:-}"
+  [[ -n "$appid" ]] || { echo "usage: $0 launch <appid>" >&2; return 1; }
+  command -v "$STEAM_BIN" >/dev/null 2>&1 || return 1
+  "$STEAM_BIN" -applaunch "$appid" >/dev/null 2>&1 &
+}
+
+cmd_open() {
+  if command -v gtk-launch >/dev/null 2>&1; then
+    if command -v uwsm-app >/dev/null 2>&1; then
+      setsid uwsm-app -- gtk-launch steam >/dev/null 2>&1 &
+    else
+      gtk-launch steam >/dev/null 2>&1 &
+    fi
+    return
+  fi
+  command -v "$STEAM_BIN" >/dev/null 2>&1 || return 1
+  "$STEAM_BIN" >/dev/null 2>&1 &
+}
+
+case "${1:-}" in
+popup)
+  cmd_popup
+  ;;
+launch)
+  cmd_launch "${2:-}"
+  ;;
+open|open-downloads)
+  cmd_open
+  ;;
+*)
+  echo "usage: $0 popup|launch <appid>|open" >&2
+  exit 1
+  ;;
+esac
