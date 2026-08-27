@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -19,139 +18,74 @@ const (
 	packageEnd      = 0xFFFFFFFF
 )
 
-var (
-	libraryPathRE = regexp.MustCompile(`"path"\s+"([^"]+)"`)
-	appIDRE       = regexp.MustCompile(`"appid"\s+"(\d+)"`)
-	nameRE        = regexp.MustCompile(`"name"\s+"([^"]+)"`)
-)
+type PlayedGame struct {
+	AppID       string `json:"appid"`
+	Name        string `json:"name"`
+	LastPlayed  int    `json:"last_played"`
+	PlaytimeMin int    `json:"playtime_min"`
+	IconPath    string `json:"icon_path"`
+}
 
-var skipNameTokens = []string{
-	"proton",
-	"steamworks",
-	"steam linux runtime",
-	"redistributable",
+type RunningGame struct {
+	AppID string `json:"appid"`
+	Name  string `json:"name"`
 }
 
 type Result struct {
-	OK               bool   `json:"ok"`
-	Error            string `json:"error,omitempty"`
-	InstalledCount   int    `json:"installed_count,omitempty"`
-	OwnedCount       int    `json:"owned_count,omitempty"`
-	TotalPlaytimeMin int    `json:"total_playtime_min,omitempty"`
+	OK               bool          `json:"ok"`
+	Error            string        `json:"error,omitempty"`
+	Running          bool          `json:"running"`
+	DownloadBPS      int           `json:"download_bps"`
+	InstalledCount   int           `json:"installed_count"`
+	OwnedCount       int           `json:"owned_count"`
+	LibraryCount     int           `json:"library_count"`
+	PlayedGames      []PlayedGame  `json:"played_games"`
+	RunningGames     []RunningGame `json:"running_games"`
+	TotalPlaytimeMin int           `json:"total_playtime_min"`
 }
 
-func Compute(steamDir, localconfigPath string) (Result, error) {
+func fail(msg string) Result {
+	return Result{
+		OK:           false,
+		Error:        msg,
+		PlayedGames:  []PlayedGame{},
+		RunningGames: []RunningGame{},
+	}
+}
+
+func Compute(steamDir string) Result {
 	info, err := os.Stat(steamDir)
 	if err != nil || !info.IsDir() {
-		return Result{OK: false, Error: "Steam directory not found"}, nil
+		return fail("Steam directory not found")
 	}
 
-	installed, err := installedCount(steamDir)
+	localconfig := findLocalconfig(steamDir)
+	playtime, playedRecords, private, err := loadLocalconfig(localconfig)
 	if err != nil {
-		return Result{OK: false, Error: err.Error()}, nil
+		return fail(err.Error())
+	}
+
+	installed, names, running, err := scanLibrary(steamDir, private)
+	if err != nil {
+		return fail(err.Error())
 	}
 	owned, err := ownedCount(steamDir)
 	if err != nil {
-		return Result{OK: false, Error: err.Error()}, nil
-	}
-	playtime, err := totalPlaytimeMin(localconfigPath)
-	if err != nil {
-		return Result{OK: false, Error: err.Error()}, nil
+		return fail(err.Error())
 	}
 
+	played := buildPlayedGames(steamDir, names, playedRecords, private)
 	return Result{
 		OK:               true,
+		Running:          steamRunning(),
+		DownloadBPS:      downloadBPS(steamDir),
 		InstalledCount:   installed,
 		OwnedCount:       owned,
+		LibraryCount:     installed,
+		PlayedGames:      played,
+		RunningGames:     running,
 		TotalPlaytimeMin: playtime,
-	}, nil
-}
-
-func libraryPaths(steamDir string) ([]string, error) {
-	paths := []string{}
-	seen := map[string]struct{}{}
-
-	steamapps := filepath.Join(steamDir, "steamapps")
-	if st, err := os.Stat(steamapps); err == nil && st.IsDir() {
-		paths = append(paths, steamapps)
-		if abs, err := filepath.EvalSymlinks(steamapps); err == nil {
-			seen[abs] = struct{}{}
-		}
 	}
-
-	vdfPath := filepath.Join(steamapps, "libraryfolders.vdf")
-	data, err := os.ReadFile(vdfPath)
-	if err != nil {
-		return paths, nil
-	}
-
-	for _, match := range libraryPathRE.FindAllStringSubmatch(string(data), -1) {
-		lib := filepath.Join(strings.ReplaceAll(match[1], `\\`, `\`), "steamapps")
-		st, err := os.Stat(lib)
-		if err != nil || !st.IsDir() {
-			continue
-		}
-		abs, err := filepath.EvalSymlinks(lib)
-		if err != nil {
-			abs = lib
-		}
-		if _, ok := seen[abs]; ok {
-			continue
-		}
-		seen[abs] = struct{}{}
-		paths = append(paths, lib)
-	}
-	return paths, nil
-}
-
-func installedCount(steamDir string) (int, error) {
-	libs, err := libraryPaths(steamDir)
-	if err != nil {
-		return 0, err
-	}
-
-	seen := map[string]struct{}{}
-	count := 0
-	for _, lib := range libs {
-		matches, err := filepath.Glob(filepath.Join(lib, "appmanifest_*.acf"))
-		if err != nil {
-			return 0, err
-		}
-		for _, manifest := range matches {
-			data, err := os.ReadFile(manifest)
-			if err != nil {
-				continue
-			}
-			text := string(data)
-			appMatch := appIDRE.FindStringSubmatch(text)
-			if len(appMatch) < 2 {
-				continue
-			}
-			appid := appMatch[1]
-			if _, ok := seen[appid]; ok {
-				continue
-			}
-			seen[appid] = struct{}{}
-			name := ""
-			if nameMatch := nameRE.FindStringSubmatch(text); len(nameMatch) >= 2 {
-				name = strings.ToLower(nameMatch[1])
-			}
-			if isToolingName(name) {
-				continue
-			}
-			count++
-		}
-	}
-	return count, nil
-}
-
-func isToolingName(name string) bool {
-	for _, token := range skipNameTokens {
-		if strings.Contains(name, token) {
-			return true
-		}
-	}
-	return false
 }
 
 func ownedCount(steamDir string) (int, error) {
@@ -411,53 +345,6 @@ func extractAppType(block vdfbin.Map) string {
 		}
 	}
 	return ""
-}
-
-func totalPlaytimeMin(localconfigPath string) (int, error) {
-	if localconfigPath == "" || localconfigPath == "/dev/null" {
-		return 0, nil
-	}
-	doc, err := vdf.ParseFile(localconfigPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-
-	root := doc.Get("UserLocalConfigStore")
-	if root == nil {
-		return 0, nil
-	}
-	software := root.Get("Software")
-	if software == nil {
-		return 0, nil
-	}
-	valve := software.Get("Valve")
-	if valve == nil {
-		return 0, nil
-	}
-	steam := valve.Get("Steam")
-	if steam == nil {
-		return 0, nil
-	}
-	apps := steam.Get("apps")
-	if apps == nil || !apps.IsObject {
-		return 0, nil
-	}
-
-	total := 0
-	for _, app := range apps.Children {
-		if app.IsObject {
-			if pt := app.Get("Playtime"); pt != nil {
-				if n, err := strconv.Atoi(pt.Value); err == nil {
-					total += n
-				}
-			}
-			continue
-		}
-	}
-	return total, nil
 }
 
 func asMap(value any) (vdfbin.Map, bool) {

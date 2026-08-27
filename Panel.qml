@@ -54,20 +54,20 @@ Panel {
   function refresh() {
     if (!statusScript || statusProc.running) return
     if (!data.ok) loading = true
-    statusProc.command = ["bash", statusScript, "popup"]
+    statusProc.command = [statusScript, "popup"]
     statusProc.running = true
   }
 
   function launchGame(appid) {
     var id = String(appid || "").trim()
     if (!id || actionProc.running) return
-    actionProc.command = ["bash", statusScript, "launch", id]
+    actionProc.command = [statusScript, "launch", id]
     actionProc.running = true
   }
 
   function openSteam() {
     if (actionProc.running) return
-    actionProc.command = ["bash", statusScript, "open"]
+    actionProc.command = [statusScript, "open"]
     actionProc.running = true
   }
 
