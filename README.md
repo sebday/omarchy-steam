@@ -24,11 +24,7 @@ Plugins run as unsandboxed code inside `omarchy-shell`. Review the files before 
 
 Middle-click launches the Steam desktop shortcut the same way the programs menu does. Omarchy already floats that window via `default/hypr/apps/steam.lua` (centered, 1100×700).
 
-Library counts, playtime, and recent titles are read from local Steam files by `bin/steam-status`. Rebuild it after changing Go sources:
-
-```bash
-make
-```
+Library counts, playtime, and recent titles are read from local Steam files by `bin/steam-status`. The owned-game count needs Steam's binary `appinfo.vdf` and `packageinfo.vdf` caches, which shell tools can't parse reliably, so that part is in Go. Everything else is plain text VDF and app manifests.
 
 ## Bar
 
